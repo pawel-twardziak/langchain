@@ -14,6 +14,7 @@ from langchain.agents.middleware.tool_call_limit import (
     ToolCallLimitExceededError,
     ToolCallLimitMiddleware,
     ToolCallLimitState,
+    _build_warning_content,
 )
 from langchain.agents.middleware.types import ModelRequest
 from tests.unit_tests.agents.model import FakeToolCallingModel
@@ -1078,3 +1079,85 @@ def test_proactive_warning_with_create_agent() -> None:
     # Agent should complete normally with tool results
     tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
     assert len(tool_messages) >= 1, "Agent should have executed at least one tool call"
+
+
+# ---------------------------------------------------------------------------
+# Custom warning_builder tests
+# ---------------------------------------------------------------------------
+
+
+def _custom_builder(remaining: int, tool_name: str | None) -> str:
+    return f"custom-{remaining}-{tool_name}"
+
+
+def test_proactive_custom_warning_builder() -> None:
+    """Custom warning_builder is used instead of default."""
+    middleware = ToolCallLimitMiddleware(
+        run_limit=5, proactive=True, warning_threshold=3, warning_builder=_custom_builder
+    )
+    handler = _FakeHandler(response="ok")
+    # 3 calls used → 2 remaining
+    request = _make_request(run_tool_call_count={"__all__": 3})
+
+    middleware.wrap_model_call(request, handler)
+
+    captured = handler.captured_request
+    last_msg = captured.messages[-1]
+    assert isinstance(last_msg, HumanMessage)
+    assert last_msg.content == "custom-2-None"
+
+
+def test_proactive_custom_warning_builder_with_tool_name() -> None:
+    """Custom warning_builder receives tool_name when configured."""
+    middleware = ToolCallLimitMiddleware(
+        tool_name="search",
+        run_limit=3,
+        proactive=True,
+        warning_threshold=2,
+        warning_builder=_custom_builder,
+    )
+    handler = _FakeHandler(response="ok")
+    # 2 calls used → 1 remaining
+    request = _make_request(run_tool_call_count={"search": 2})
+
+    middleware.wrap_model_call(request, handler)
+
+    captured = handler.captured_request
+    last_msg = captured.messages[-1]
+    assert isinstance(last_msg, HumanMessage)
+    assert last_msg.content == "custom-1-search"
+
+
+def test_proactive_custom_warning_builder_exhausted() -> None:
+    """Custom warning_builder is called with remaining=0 when budget exhausted."""
+    middleware = ToolCallLimitMiddleware(
+        run_limit=3, proactive=True, warning_threshold=3, warning_builder=_custom_builder
+    )
+    handler = _FakeHandler(response="ok")
+    # 3 calls used → 0 remaining
+    request = _make_request(run_tool_call_count={"__all__": 3})
+
+    middleware.wrap_model_call(request, handler)
+
+    captured = handler.captured_request
+    last_msg = captured.messages[-1]
+    assert isinstance(last_msg, HumanMessage)
+    assert last_msg.content == "custom-0-None"
+
+
+def test_proactive_warning_builder_none_uses_default() -> None:
+    """warning_builder=None falls back to default _build_warning_content."""
+    middleware = ToolCallLimitMiddleware(
+        run_limit=5, proactive=True, warning_threshold=3, warning_builder=None
+    )
+    handler = _FakeHandler(response="ok")
+    # 3 calls used → 2 remaining
+    request = _make_request(run_tool_call_count={"__all__": 3})
+
+    middleware.wrap_model_call(request, handler)
+
+    captured = handler.captured_request
+    last_msg = captured.messages[-1]
+    assert isinstance(last_msg, HumanMessage)
+    expected = _build_warning_content(2, None)
+    assert last_msg.content == expected

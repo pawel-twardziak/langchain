@@ -242,6 +242,23 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
             # persist in the conversation state.
             ```
 
+        !!! example "Proactive warnings with custom messages"
+
+            ```python
+            def spanish_warnings(remaining: int, tool_name: str | None) -> str:
+                tool_desc = f" para '{tool_name}'" if tool_name else ""
+                if remaining <= 0:
+                    return f"[Aviso: Has agotado tu presupuesto de llamadas{tool_desc}.]"
+                return f"[Aviso: Te quedan {remaining} llamada(s){tool_desc}.]"
+
+
+            limiter = ToolCallLimitMiddleware(
+                run_limit=10,
+                proactive=True,
+                warning_builder=spanish_warnings,
+            )
+            ```
+
     """
 
     state_schema = ToolCallLimitState  # type: ignore[assignment]
@@ -255,6 +272,7 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
         exit_behavior: ExitBehavior = "continue",
         proactive: bool = False,
         warning_threshold: int = 5,
+        warning_builder: Callable[[int, str | None], str] | None = None,
     ) -> None:
         """Initialize the tool call limit middleware.
 
@@ -282,6 +300,10 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
             warning_threshold: When `proactive` is `True`, start injecting warnings
                 once the number of remaining calls is at or below this value.
                 Must be >= 0.
+            warning_builder: Custom callable that builds the warning message
+                string. Takes `(remaining, tool_name)` and returns the warning
+                text. If `None` (default), uses the built-in English warning
+                messages. Only used when `proactive` is `True`.
 
         Raises:
             ValueError: If both limits are `None`, if `exit_behavior` is invalid,
@@ -316,6 +338,7 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
         self.exit_behavior = exit_behavior
         self.proactive = proactive
         self.warning_threshold = warning_threshold
+        self.warning_builder = warning_builder
 
     @property
     def name(self) -> str:
@@ -607,7 +630,8 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
         if remaining > self.warning_threshold:
             return handler(request)
 
-        warning = _build_warning_content(int(remaining), self.tool_name)
+        builder = self.warning_builder or _build_warning_content
+        warning = builder(int(remaining), self.tool_name)
         return handler(
             request.override(messages=[*request.messages, HumanMessage(content=warning)])
         )
@@ -635,7 +659,8 @@ class ToolCallLimitMiddleware(AgentMiddleware[ToolCallLimitState[ResponseT], Con
         if remaining > self.warning_threshold:
             return await handler(request)
 
-        warning = _build_warning_content(int(remaining), self.tool_name)
+        builder = self.warning_builder or _build_warning_content
+        warning = builder(int(remaining), self.tool_name)
         return await handler(
             request.override(messages=[*request.messages, HumanMessage(content=warning)])
         )
